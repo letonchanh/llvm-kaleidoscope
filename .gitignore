@@ -1,0 +1,13 @@
+bazel-bin
+bazel-llvm-kaleidoscope
+bazel-out
+bazel-testlogs
+
+.vscode/**
+
+.DS_Store
+
+MODULE.bazel
+MODULE.bazel.lock
+
+*.k
