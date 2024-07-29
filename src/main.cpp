@@ -1,8 +1,10 @@
 #include <memory>
 #include <iostream>
+#include <cstdlib>
 
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/Support/ManagedStatic.h"
 
 #include "lexer/input.h"
 #include "lexer/lexer.h"
@@ -35,18 +37,18 @@ int main()
     visitors.push_back(printer.get());
     visitors.push_back(codegen.get());
 
-    std::unique_ptr<ProgramAST> ast = parser->ParseProgram(visitors);
+    ParseResult r = parser->ParseProgram(visitors);
+    if (r.isError())
+    {
+        fprintf(stderr, "%s", r.error().message.c_str());
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+
     // ast->accept(printer.get());
     // if (auto err = ast->accept(codegen.get()))
     // {
     //     fprintf(stderr, "codegen failed: %s\n", err->message.c_str());
     //     return 0;
     // }
-    bool broken = llvm::verifyModule(*codegen->Module, &llvm::errs());
-    if (broken)
-    {
-        fprintf(stderr, "Generated IR broken\n");
-        return 0;
-    }
-    codegen->Module->print(llvm::errs(), nullptr);
 }

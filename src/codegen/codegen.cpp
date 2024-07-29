@@ -2,8 +2,6 @@
 
 #include "codegen.h"
 
-#include "logger/logger.h"
-
 #include "ast/BinaryExprAST.h"
 #include "ast/CallExprAST.h"
 #include "ast/FunctionAST.h"
@@ -14,15 +12,30 @@
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/IR/Type.h"
-#include "llvm/IR/Function.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Verifier.h"
 
 CodeGen::CodeGen()
 {
+    // We only use a single JIT to manage multiple modules.
+    jm = std::make_unique<JITManager>();
+    init();
+}
+
+void CodeGen::init()
+{
+    // Open a new context and module.
     Context = std::make_unique<llvm::LLVMContext>();
     Module = std::make_unique<llvm::Module>("kaleidoscope", *Context);
+    // When a module is created, set JIT's data layout to it
+    // so that the generated code in this module is consistent with JIT.
+    Module->setDataLayout(jm->JIT->getDataLayout());
+
+    // Create a new builder for the module.
     Builder = std::make_unique<llvm::IRBuilder<>>(*Context);
+
+    // Create a new optimizer
+    optimizer = std::make_unique<Optimizer>(*Context);
 }
 
 std::optional<Error> CodeGen::visit(NumberExprAST *ast)
@@ -46,7 +59,10 @@ std::optional<Error> CodeGen::visit(VariableExprAST *ast)
 std::optional<Error> CodeGen::visit(CallExprAST *ast)
 {
     // Look up the name in the global module table.
-    llvm::Function *calleeFn = Module->getFunction(ast->Callee);
+    auto r = getFunction(ast->Callee);
+    if (r.isError())
+        return r.error();
+    llvm::Function *calleeFn = r.value();
     if (!calleeFn)
     {
         return Error("unknown function referenced");
@@ -110,6 +126,24 @@ std::optional<Error> CodeGen::visit(BinaryExprAST *ast)
     return std::nullopt;
 }
 
+Result<llvm::Function *, Error> CodeGen::getFunction(std::string fnName)
+{
+    if (auto *fn = Module->getFunction(fnName))
+    {
+        return Result<llvm::Function *, Error>(fn);
+    }
+    if (fnProtos.count(fnName) > 0)
+    {
+        // Visit the function's PrototypeAST to add its declaration
+        // to the current module in its first encounter.
+        if (auto err = fnProtos[fnName]->accept(this))
+        {
+            return Result<llvm::Function *, Error>(err.value());
+        }
+    }
+    return Result<llvm::Function *, Error>(Module->getFunction(fnName));
+}
+
 std::optional<Error> CodeGen::visit(PrototypeAST *ast)
 {
     // First, check for an existing function from a previous 'extern' declaration.
@@ -118,12 +152,20 @@ std::optional<Error> CodeGen::visit(PrototypeAST *ast)
     {
         if (!fn->empty())
         {
-            return Error("function redefined");
+            return Error("redeclare a defined function");
         }
         if (fn->arg_size() != ast->Args.size())
         {
             return Error("# params mismatched");
         }
+    }
+    else if (fnProtos.count(ast->Name) > 0)
+    {
+        // This prototype has been defined in other module before,
+        // check if the prototype is consistent with the previous definition.
+        // JIT will return an error if two duplicate definitions are added.
+        if (ast->Args.size() != fnProtos[ast->Name]->Args.size())
+            return Error("# params mismatched");
     }
 
     if (!fn)
@@ -135,9 +177,6 @@ std::optional<Error> CodeGen::visit(PrototypeAST *ast)
 
         // The created function would be added into Module.
         fn = llvm::Function::Create(fnType, llvm::Function::ExternalLinkage, ast->Name, *Module);
-
-        // Print the newly created function
-        fn->print(llvm::errs());
     }
 
     // Set names for all arguments.
@@ -145,28 +184,42 @@ std::optional<Error> CodeGen::visit(PrototypeAST *ast)
     for (auto &arg : fn->args())
         arg.setName(ast->Args[idx++]);
 
+    fnProtos[ast->Name] = ast;
+
     return std::nullopt;
 }
 
-void deleteFn(llvm::Function *fn, bool isDeclared)
+void CodeGen::deleteFn(llvm::Function *fn, bool isDeclared)
 {
     if (isDeclared)
+    {
         fn->deleteBody();
+    }
     else
+    {
+        fnProtos.erase(fn->getName().str());
         fn->removeFromParent();
+    }
 }
 
 std::optional<Error> CodeGen::visit(FunctionAST *ast)
 {
     bool isDeclared = false;
-    if (auto fn = Module->getFunction(ast->Proto->Name))
+    auto r = getFunction(ast->Proto->Name);
+    if (r.isError())
+        return r.error();
+    if (auto fn = r.value())
     {
         isDeclared = true;
     }
+
     if (auto err = ast->Proto->accept(this))
         return err;
 
-    llvm::Function *fn = Module->getFunction(ast->Proto->Name);
+    r = getFunction(ast->Proto->Name);
+    if (r.isError())
+        return r.error();
+    llvm::Function *fn = r.value();
 
     // Create a new basic block to start insertion into.
     llvm::BasicBlock *bb = llvm::BasicBlock::Create(*Context, "entry", fn);
@@ -205,7 +258,39 @@ std::optional<Error> CodeGen::visit(FunctionAST *ast)
     }
 
     // Print the newly created function
+    fprintf(stderr, "*** Generated function:\n");
     fn->print(llvm::errs());
+
+    optimizer->optimizeFn(*fn);
+
+    // Print the optimized function
+    fprintf(stderr, "*** Optimized function:\n");
+    fn->print(llvm::errs());
+
+    if (ast->Proto->Name == "__main__")
+    {
+        bool broken = llvm::verifyModule(*Module, &llvm::errs());
+        if (broken)
+        {
+            fprintf(stderr, "Generated IR broken\n");
+            return std::nullopt;
+        }
+
+        fprintf(stderr, "*** Main module:\n");
+        Module->print(llvm::errs(), nullptr);
+
+        // Move the current module and context containing __main__
+        // into JIT to execute.
+        jm->JITExec(std::move(Module), std::move(Context));
+    }
+    else
+    {
+        // Move the current module and context, which contain
+        // the function's implementation, to JIT.
+        jm->JITAddModule(std::move(Module), std::move(Context));
+    }
+    // Create new module and context for the next function.
+    init();
 
     return std::nullopt;
 }

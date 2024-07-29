@@ -8,5 +8,5 @@ cc_library(
         "..",
     ],
     visibility = ["//visibility:public"],
-    deps = ["//src/error:error_lib"],
+    deps = ["//src/utils:utils_lib"],
 )

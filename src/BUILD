@@ -11,5 +11,6 @@ cc_binary(
         "//src/utils:printer_visitor",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:Support",
+        # "@llvm-project//llvm:Target",
     ],
 )

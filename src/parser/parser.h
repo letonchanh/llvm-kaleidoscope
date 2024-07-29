@@ -15,6 +15,11 @@
 
 #include "lexer/lexer.h"
 
+#include "error.h"
+#include "result.h"
+
+using ParseResult = Result<std::unique_ptr<AST>, Error>;
+
 class Parser
 {
     std::unique_ptr<Lexer> lexer;
@@ -29,17 +34,17 @@ class Parser
         return -1;
     }
 
-    std::unique_ptr<ExprAST> parseNumberExpr();
-    std::unique_ptr<ExprAST> parseParenExpr();
-    std::unique_ptr<ExprAST> parseIdentifierExpr();
-    std::unique_ptr<ExprAST> parsePrimaryExpr();
-    std::unique_ptr<ExprAST> parseBinOpRHS(int ExprPrec, std::unique_ptr<ExprAST> LHS);
-    std::unique_ptr<ExprAST> parseExpression();
-    std::unique_ptr<PrototypeAST> parsePrototype();
+    ParseResult parseNumberExpr();
+    ParseResult parseParenExpr();
+    ParseResult parseIdentifierExpr();
+    ParseResult parsePrimaryExpr();
+    ParseResult parseBinOpRHS(int ExprPrec, std::unique_ptr<ExprAST> LHS);
+    ParseResult parseExpression();
+    ParseResult parsePrototype();
 
-    std::unique_ptr<FunctionAST> parseDefinition();
-    std::unique_ptr<PrototypeAST> parseExtern();
-    std::unique_ptr<FunctionAST> parseTopLevelExpr();
+    ParseResult parseDefinition();
+    ParseResult parseExtern();
+    ParseResult parseTopLevelExpr();
 
     FRIEND_TEST(ParserTest, NumberExpr);
     FRIEND_TEST(ParserTest, ParenExpr);
@@ -62,7 +67,7 @@ public:
         binOpPrecedence['*'] = 40; // highest
     }
 
-    std::unique_ptr<ProgramAST> ParseProgram(
+    ParseResult ParseProgram(
         const std::vector<Visitor *> &visitors = std::vector<Visitor *>());
 };
 

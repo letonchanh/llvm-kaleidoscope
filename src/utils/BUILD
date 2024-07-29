@@ -14,3 +14,36 @@ cc_library(
         "//src/visitor:visitor_lib",
     ],
 )
+
+cc_library(
+    name = "error_lib",
+    hdrs = ["error.h"],
+    includes = [
+        ".",
+        "..",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "result_lib",
+    hdrs = ["result.h"],
+    includes = [
+        ".",
+        "..",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "utils_lib",
+    includes = [
+        ".",
+        "..",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":error_lib",
+        ":result_lib",
+    ],
+)

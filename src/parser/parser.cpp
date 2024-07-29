@@ -12,36 +12,38 @@
 
 // This routine expects to be called when the current token is a tok_number.
 // It takes the current number value and creates a NumberExprAST node.
-std::unique_ptr<ExprAST> Parser::parseNumberExpr()
+ParseResult Parser::parseNumberExpr()
 {
-    auto result = std::make_unique<NumberExprAST>(lexer->NumVal);
+    auto v = std::make_unique<NumberExprAST>(lexer->NumVal);
     lexer->GetNextToken();
-    return std::move(result);
+    return ParseResult(std::move(v));
 }
 
 // This routine parses expressions in "(" and ")" characters
-std::unique_ptr<ExprAST> Parser::parseParenExpr()
+ParseResult Parser::parseParenExpr()
 {
     lexer->GetNextToken(); // eat '('
-    auto v = parseExpression();
-    if (!v)
-        return nullptr;
+    auto r = parseExpression();
+    if (r.isError())
+        return r;
     if (lexer->CurTok != ')')
-        return ParseError("expected ')'");
+        return ParseResult(Error("expected ')'"));
     lexer->GetNextToken(); // eat ')'
-    return v;
+    return r;
 }
 
 /// identifierExpr
 ///   ::= identifier
 ///     | identifier '(' expression* ')'
-std::unique_ptr<ExprAST> Parser::parseIdentifierExpr()
+ParseResult Parser::parseIdentifierExpr()
 {
     std::string idName = lexer->IdentifierStr;
     lexer->GetNextToken(); // eat identifier
 
     if (lexer->CurTok != '(')
-        return std::make_unique<VariableExprAST>(idName);
+    {
+        return ParseResult(std::make_unique<VariableExprAST>(idName));
+    }
 
     lexer->GetNextToken(); // eat '('
     std::vector<std::unique_ptr<ExprAST>> args;
@@ -49,29 +51,31 @@ std::unique_ptr<ExprAST> Parser::parseIdentifierExpr()
     {
         while (true)
         {
-            if (auto arg = parseExpression())
-                args.push_back(std::move(arg));
-            else
-                return nullptr;
+            auto r = parseExpression();
+            if (r.isError())
+                return r;
+            std::unique_ptr<AST> v = r.value();
+            std::unique_ptr<ExprAST> arg(static_cast<ExprAST *>(v.release()));
+            args.push_back(std::move(arg));
 
             if (lexer->CurTok == ')')
                 break;
 
             if (lexer->CurTok != ',')
-                return ParseError("Expected ')' or ',' after an argument of a call expression");
+                return ParseResult(Error("Expected ')' or ',' after an argument of a call expression"));
             lexer->GetNextToken(); // eat ','
         }
     }
 
     lexer->GetNextToken(); // eat ')'
-    return std::make_unique<CallExprAST>(idName, std::move(args));
+    return ParseResult(std::make_unique<CallExprAST>(idName, std::move(args)));
 }
 
 /// PrimaryExpr
 ///   ::= IdentifierExpr
 ///     | NumberExpr
 ///     | ParenExpr
-std::unique_ptr<ExprAST> Parser::parsePrimaryExpr()
+ParseResult Parser::parsePrimaryExpr()
 {
     switch (lexer->CurTok)
     {
@@ -84,17 +88,19 @@ std::unique_ptr<ExprAST> Parser::parsePrimaryExpr()
     default:
         std::ostringstream errorMsg;
         errorMsg << "unknown token " << lexer->CurTok << " when expecting a primary expression";
-        return ParseError(errorMsg.str().c_str());
+        return ParseResult(Error(errorMsg.str()));
     }
 }
 
 /// Expression
 ///   ::= PrimaryExpr BinOpRHS
-std::unique_ptr<ExprAST> Parser::parseExpression()
+ParseResult Parser::parseExpression()
 {
-    auto LHS = parsePrimaryExpr();
-    if (!LHS)
-        return nullptr;
+    auto r = parsePrimaryExpr();
+    if (r.isError())
+        return r;
+    std::unique_ptr<AST> v = r.value();
+    std::unique_ptr<ExprAST> LHS(static_cast<ExprAST *>(v.release()));
     return parseBinOpRHS(0, std::move(LHS));
 }
 
@@ -102,7 +108,7 @@ std::unique_ptr<ExprAST> Parser::parseExpression()
 ///   ::= '<' Expression
 ///     | '+-' Expression
 ///     | '*/' Expression
-std::unique_ptr<ExprAST> Parser::parseBinOpRHS(int exprPrec, std::unique_ptr<ExprAST> LHS)
+ParseResult Parser::parseBinOpRHS(int exprPrec, std::unique_ptr<ExprAST> LHS)
 {
     while (true)
     {
@@ -111,22 +117,30 @@ std::unique_ptr<ExprAST> Parser::parseBinOpRHS(int exprPrec, std::unique_ptr<Exp
         // If this is a binop that binds at least as tightly as the current binop,
         // (tokPrec >= exprPrec) consume it, otherwise we are done.
         if (tokPrec < exprPrec)
-            return LHS;
+            return ParseResult(std::move(LHS));
 
         int binOp = lexer->CurTok;
         lexer->GetNextToken(); // eat binop
 
         // Parse the primary expression after the binary operator.
-        auto RHS = parsePrimaryExpr();
-        if (!RHS)
-            return nullptr;
+        auto r = parsePrimaryExpr();
+        if (r.isError())
+            return r;
+
+        std::unique_ptr<AST> v = r.value();
+        std::unique_ptr<ExprAST> RHS(static_cast<ExprAST *>(v.release()));
 
         // If binop binds less tightly with RHS than the operator after RHS
         // (tokPrec < nextPrec), let the pending operator take RHS as its LHS.
         int nextPrec = getTokPrecedence(lexer->CurTok);
         if (tokPrec < nextPrec)
         {
-            RHS = parseBinOpRHS(tokPrec + 1, std::move(RHS));
+            r = parseBinOpRHS(tokPrec + 1, std::move(RHS));
+            if (r.isError())
+                return r;
+
+            v = r.value();
+            RHS = std::unique_ptr<ExprAST>(static_cast<ExprAST *>(v.release()));
         }
 
         LHS = std::make_unique<BinaryExprAST>(binOp, std::move(LHS), std::move(RHS));
@@ -135,16 +149,16 @@ std::unique_ptr<ExprAST> Parser::parseBinOpRHS(int exprPrec, std::unique_ptr<Exp
 
 /// prototype
 ///   ::= id '(' id* ')'
-std::unique_ptr<PrototypeAST> Parser::parsePrototype()
+ParseResult Parser::parsePrototype()
 {
     if (lexer->CurTok != tok_identifier)
-        return ParseErrorProto("expected function name in prototype");
+        return ParseResult(Error("expected function name in prototype"));
 
     std::string fnName = lexer->IdentifierStr;
     lexer->GetNextToken(); // eat id
 
     if (lexer->CurTok != '(')
-        return ParseErrorProto("expected '(' in prototype");
+        return ParseResult(Error("expected '(' in prototype"));
     lexer->GetNextToken(); // eat '('
 
     // Read the list of argument names.
@@ -159,89 +173,109 @@ std::unique_ptr<PrototypeAST> Parser::parsePrototype()
         if (lexer->CurTok == ',')
             lexer->GetNextToken(); // eat ','
         else
-            return ParseErrorProto("expected ')' or ',' after a prototype's argument");
+            return ParseResult(Error("expected ')' or ',' after a prototype's argument"));
     }
 
     if (lexer->CurTok != ')')
-        return ParseErrorProto("expected ')' in prototype");
+        return ParseResult(Error("expected ')' in prototype"));
     lexer->GetNextToken(); // eat ')'
 
-    return std::make_unique<PrototypeAST>(fnName, argNames);
+    return ParseResult(std::make_unique<PrototypeAST>(fnName, argNames));
 }
 
 /// definition ::= 'def' prototype expression
-std::unique_ptr<FunctionAST> Parser::parseDefinition()
+ParseResult Parser::parseDefinition()
 {
     lexer->GetNextToken(); // eat 'def'
-    auto proto = parsePrototype();
-    if (!proto)
-        return nullptr;
+    auto r = parsePrototype();
+    if (r.isError())
+        return r;
+    auto v = r.value();
+    std::unique_ptr<PrototypeAST> proto(static_cast<PrototypeAST *>(v.release()));
 
-    if (auto body = parseExpression())
-        return std::make_unique<FunctionAST>(
-            std::move(proto),
-            std::move(body));
-    return nullptr;
+    r = parseExpression();
+    if (r.isError())
+        return r;
+    v = r.value();
+    std::unique_ptr<ExprAST> body(static_cast<ExprAST *>(v.release()));
+
+    return ParseResult(std::make_unique<FunctionAST>(
+        std::move(proto),
+        std::move(body)));
 }
 
 /// external ::= 'extern' prototype
-std::unique_ptr<PrototypeAST> Parser::parseExtern()
+ParseResult Parser::parseExtern()
 {
     lexer->GetNextToken(); // eat 'extern'
     return parsePrototype();
 }
 
 /// toplevelexpr ::= expression
-std::unique_ptr<FunctionAST> Parser::parseTopLevelExpr()
+ParseResult Parser::parseTopLevelExpr()
 {
-    if (auto expr = parseExpression())
-    {
-        auto proto = std::make_unique<PrototypeAST>("__main__", std::vector<std::string>());
-        return std::make_unique<FunctionAST>(std::move(proto), std::move(expr));
-    }
-    return nullptr;
+    auto r = parseExpression();
+    if (r.isError())
+        return r;
+    auto v = r.value();
+    std::unique_ptr<ExprAST> expr(static_cast<ExprAST *>(v.release()));
+
+    auto proto = std::make_unique<PrototypeAST>("__main__", std::vector<std::string>());
+    return ParseResult(std::make_unique<FunctionAST>(std::move(proto), std::move(expr)));
 }
 
 /// program := (definition | external | toplevelexpr | ';')*
-std::unique_ptr<ProgramAST> Parser::ParseProgram(
+ParseResult Parser::ParseProgram(
     const std::vector<Visitor *> &visitors)
 {
+    ParseResult r(Error("dummy", -1));
     auto nodes = std::vector<std::unique_ptr<AST>>();
     while (true)
     {
-        fprintf(stderr, "ready> ");
-        std::unique_ptr<AST> node = nullptr;
         switch (lexer->CurTok)
         {
         case tok_eof:
-            return std::make_unique<ProgramAST>(std::move(nodes));
+            return ParseResult(std::make_unique<ProgramAST>(std::move(nodes)));
         case ';':
-            lexer->GetNextToken();
+            r = ParseResult(Error("dummy", -1)); // a dummy error
             break;
         case tok_def:
-            node = parseDefinition();
+            r = parseDefinition();
             break;
         case tok_extern:
-            node = parseExtern();
+            r = parseExtern();
             break;
         default:
-            node = parseTopLevelExpr();
+            r = parseTopLevelExpr();
             break;
         }
-        if (node)
+
+        if (r.isError())
         {
-            bool ok = true;
-            for (const auto &visitor : visitors)
+            Error err = r.error();
+            if (err.code >= 0)
             {
-                if (auto err = node->accept(visitor))
-                {
-                    fprintf(stderr, "visitor failed: %s\n", err->message.c_str());
-                    ok = false;
-                }
+                fprintf(stderr, "error: %s\n", err.message.c_str());
+                fprintf(stderr, "ready> ");
             }
-            if (ok)
-                nodes.push_back(std::move(node));
+            // Move to the next token for error recovery
+            lexer->GetNextToken();
+            continue;
         }
+
+        std::unique_ptr<AST> node = r.value();
+
+        bool ok = true;
+        for (const auto &visitor : visitors)
+        {
+            if (auto err = node->accept(visitor))
+            {
+                fprintf(stderr, "visitor failed: %s\n", err->message.c_str());
+                ok = false;
+            }
+        }
+        if (ok)
+            nodes.push_back(std::move(node));
+        fprintf(stderr, "ready> ");
     }
-    return nullptr;
 }
