@@ -37,6 +37,7 @@ class Parser
     ParseResult parseNumberExpr();
     ParseResult parseParenExpr();
     ParseResult parseIdentifierExpr();
+    ParseResult parseIfExpr();
     ParseResult parsePrimaryExpr();
     ParseResult parseBinOpRHS(int ExprPrec, std::unique_ptr<ExprAST> LHS);
     ParseResult parseExpression();

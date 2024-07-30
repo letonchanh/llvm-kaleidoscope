@@ -6,6 +6,7 @@
 
 class NumberExprAST;
 class VariableExprAST;
+class IfExprAST;
 class CallExprAST;
 class BinaryExprAST;
 class PrototypeAST;
@@ -19,6 +20,7 @@ public:
 
     virtual std::optional<Error> visit(NumberExprAST *ast) = 0;
     virtual std::optional<Error> visit(VariableExprAST *ast) = 0;
+    virtual std::optional<Error> visit(IfExprAST *ast) = 0;
     virtual std::optional<Error> visit(CallExprAST *ast) = 0;
     virtual std::optional<Error> visit(BinaryExprAST *ast) = 0;
 

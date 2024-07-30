@@ -6,6 +6,7 @@
 #include "ast/VariableExprAST.h"
 #include "ast/CallExprAST.h"
 #include "ast/BinaryExprAST.h"
+#include "ast/IfExprAST.h"
 
 #include "parser.h"
 #include "logger.h"
@@ -62,7 +63,7 @@ ParseResult Parser::parseIdentifierExpr()
                 break;
 
             if (lexer->CurTok != ',')
-                return ParseResult(Error("Expected ')' or ',' after an argument of a call expression"));
+                return ParseResult(Error("expected ')' or ',' after an argument of a call expression"));
             lexer->GetNextToken(); // eat ','
         }
     }
@@ -71,10 +72,45 @@ ParseResult Parser::parseIdentifierExpr()
     return ParseResult(std::make_unique<CallExprAST>(idName, std::move(args)));
 }
 
+ParseResult Parser::parseIfExpr()
+{
+    lexer->GetNextToken(); // eat 'if'
+    auto r = parseExpression();
+    if (r.isError())
+        return r;
+    std::unique_ptr<AST> v = r.value();
+    std::unique_ptr<ExprAST> _cond(static_cast<ExprAST *>(v.release()));
+
+    if (lexer->CurTok != tok_then)
+        return ParseResult(Error("expected then"));
+    lexer->GetNextToken(); // eat 'then'
+    r = parseExpression();
+    if (r.isError())
+        return r;
+    v = r.value();
+    std::unique_ptr<ExprAST> _then(static_cast<ExprAST *>(v.release()));
+
+    if (lexer->CurTok != tok_else)
+        return ParseResult(Error("expected else"));
+    lexer->GetNextToken(); // eat 'else'
+    r = parseExpression();
+    if (r.isError())
+        return r;
+    v = r.value();
+    std::unique_ptr<ExprAST> _else(static_cast<ExprAST *>(v.release()));
+
+    std::unique_ptr<IfExprAST> ifExpr = std::make_unique<IfExprAST>(
+        std::move(_cond),
+        std::move(_then),
+        std::move(_else));
+    return ParseResult(std::move(ifExpr));
+}
+
 /// PrimaryExpr
 ///   ::= IdentifierExpr
 ///     | NumberExpr
 ///     | ParenExpr
+///     | IfExpr
 ParseResult Parser::parsePrimaryExpr()
 {
     switch (lexer->CurTok)
@@ -83,6 +119,8 @@ ParseResult Parser::parsePrimaryExpr()
         return parseIdentifierExpr();
     case tok_number:
         return parseNumberExpr();
+    case tok_if:
+        return parseIfExpr();
     case '(':
         return parseParenExpr();
     default:

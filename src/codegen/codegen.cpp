@@ -9,6 +9,7 @@
 #include "ast/ProgramAST.h"
 #include "ast/PrototypeAST.h"
 #include "ast/VariableExprAST.h"
+#include "ast/IfExprAST.h"
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/IR/Type.h"
@@ -86,6 +87,57 @@ std::optional<Error> CodeGen::visit(CallExprAST *ast)
 
     llvm::Value *result = Builder->CreateCall(calleeFn, argsV, "calltmp");
     exprVal.reset(result);
+    return std::nullopt;
+}
+
+std::optional<Error> CodeGen::visit(IfExprAST *ast)
+{
+    if (auto err = ast->Cond->accept(this))
+        return err;
+    llvm::Value *condVal = exprVal.release();
+
+    // Convert condition to a 1-bit bool by comparing non-equal to 0.0.
+    condVal = Builder->CreateFCmpONE(
+        condVal,
+        llvm::ConstantFP::get(*Context, llvm::APFloat(0.0)),
+        "ifcond");
+
+    llvm::Function *fn = Builder->GetInsertBlock()->getParent();
+
+    // Create blocks for the then and else cases.
+    // Insert the 'then' block at the end of the function.
+    llvm::BasicBlock *thenBB = llvm::BasicBlock::Create(*Context, "then", fn);
+    llvm::BasicBlock *elseBB = llvm::BasicBlock::Create(*Context, "else");
+    llvm::BasicBlock *mergeBB = llvm::BasicBlock::Create(*Context, "ifcont");
+
+    Builder->CreateCondBr(condVal, thenBB, elseBB);
+
+    // Emit then value.
+    Builder->SetInsertPoint(thenBB);
+    if (auto err = ast->Then->accept(this))
+        return err;
+    llvm::Value *thenV = exprVal.release();
+    Builder->CreateBr(mergeBB);
+    // Codegen of 'Then' can change the current block, update ThenBB for the PHI.
+    thenBB = Builder->GetInsertBlock();
+
+    // Emit else value.
+    fn->insert(fn->end(), elseBB);
+    Builder->SetInsertPoint(elseBB);
+    if (auto err = ast->Else->accept(this))
+        return err;
+    llvm::Value *elseV = exprVal.release();
+    Builder->CreateBr(mergeBB);
+    // codegen of 'Else' can change the current block, update ElseBB for the PHI.
+    elseBB = Builder->GetInsertBlock();
+
+    // Emit merge block.
+    fn->insert(fn->end(), mergeBB);
+    Builder->SetInsertPoint(mergeBB);
+    llvm::PHINode *phiNode = Builder->CreatePHI(llvm::Type::getDoubleTy(*Context), 2, "iftmp");
+    phiNode->addIncoming(thenV, thenBB);
+    phiNode->addIncoming(elseV, elseBB);
+    exprVal.reset(phiNode);
     return std::nullopt;
 }
 
